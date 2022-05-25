@@ -33,6 +33,7 @@ export interface Config {
     alertCommentCcUsers: string[];
     externalDataJsonPath: string | undefined;
     maxItemsInChart: number | null;
+    commentFooter: string;
 }
 
 export const VALID_TOOLS: ToolType[] = [
@@ -243,6 +244,7 @@ export async function configFromJobInput(): Promise<Config> {
     let externalDataJsonPath: undefined | string = core.getInput('external-data-json-path');
     const maxItemsInChart = getUintInput('max-items-in-chart');
     let failThreshold = getPercentageInput('fail-threshold');
+    const commentFooter: string = core.getInput('comment-footer');
 
     validateToolType(tool);
     outputFilePath = await validateOutputFilePath(outputFilePath);
@@ -284,5 +286,6 @@ export async function configFromJobInput(): Promise<Config> {
         externalDataJsonPath,
         maxItemsInChart,
         failThreshold,
+        commentFooter,
     };
 }
