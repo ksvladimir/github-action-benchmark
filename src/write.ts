@@ -141,7 +141,10 @@ function floatStr(n: number) {
     return n.toString();
 }
 
-function strVal(b: BenchmarkResult): string {
+function strVal(b: BenchmarkResult | undefined): string {
+    if (b === undefined) {
+        return '';
+    }
     let s = `\`${b.value}\` ${b.unit}`;
     if (b.range) {
         s += ` (\`${b.range}\`)`;
@@ -163,28 +166,34 @@ function commentFooter(config: Config): string {
     return footer;
 }
 
-function buildComment(benchName: string, curSuite: Benchmark, prevSuite: Benchmark, config: Config): string {
+function buildComment(
+    benchName: string,
+    curSuite: Benchmark,
+    prevSuite: Benchmark,
+    prevBest: { [key: string]: BenchmarkResult },
+    config: Config,
+): string {
     const lines = [
         `# ${benchName}`,
         '',
         '<details>',
         '',
-        `| Benchmark suite | Current: ${curSuite.commit.id} | Previous: ${prevSuite.commit.id} | Ratio |`,
-        '|-|-|-|-|',
+        `| Benchmark suite | Best | Previous: ${prevSuite.commit.id} | Current: ${curSuite.commit.id} | Ratio |`,
+        '|-|-|-|-|-|',
     ];
 
     for (const current of curSuite.benches) {
-        let line;
-        const prev = prevSuite.benches.find((i) => i.name === current.name);
+        let line = `| \`${current.name}\` | ${strVal(prevBest[current.name])} |`;
 
+        const prev = prevSuite.benches.find((i) => i.name === current.name);
         if (prev) {
             const ratio = biggerIsBetter(curSuite.tool)
                 ? prev.value / current.value // e.g. current=100, prev=200
                 : current.value / prev.value;
 
-            line = `| \`${current.name}\` | ${strVal(current)} | ${strVal(prev)} | \`${floatStr(ratio)}\` |`;
+            line = line + `${strVal(prev)} | ${strVal(current)} | \`${floatStr(ratio)}\` |`;
         } else {
-            line = `| \`${current.name}\` | ${strVal(current)} | | |`;
+            line = line + ` | ${strVal(current)} | |`;
         }
 
         lines.push(line);
@@ -201,6 +210,7 @@ function buildAlertComment(
     benchName: string,
     curSuite: Benchmark,
     prevSuite: Benchmark,
+    prevBest: { [key: string]: BenchmarkResult },
     threshold: number,
     cc: string[],
     config: Config,
@@ -215,13 +225,16 @@ function buildAlertComment(
         `Possible performance regression was detected for benchmark${benchmarkText}.`,
         `Benchmark result of this commit is worse than the previous benchmark result exceeding threshold \`${thresholdString}\`.`,
         '',
-        `| Benchmark suite | Current: ${curSuite.commit.id} | Previous: ${prevSuite.commit.id} | Ratio |`,
-        '|-|-|-|-|',
+        `| Benchmark suite | Best | Previous: ${prevSuite.commit.id} | Current: ${curSuite.commit.id} | Ratio |`,
+        '|-|-|-|-|-|',
     ];
 
     for (const alert of alerts) {
         const { current, prev, ratio } = alert;
-        const line = `| \`${current.name}\` | ${strVal(current)} | ${strVal(prev)} | \`${floatStr(ratio)}\` |`;
+        const best = prevBest[current.name];
+        const line =
+            `| \`${current.name}\` | ${strVal(best)} | ${strVal(prev)} ` +
+            `| ${strVal(current)} | \`${floatStr(ratio)}\` |`;
         lines.push(line);
     }
 
@@ -255,7 +268,13 @@ async function leaveComment(commitId: string, body: string, token: string) {
     return res;
 }
 
-async function handleComment(benchName: string, curSuite: Benchmark, prevSuite: Benchmark, config: Config) {
+async function handleComment(
+    benchName: string,
+    curSuite: Benchmark,
+    prevSuite: Benchmark,
+    prevBest: { [key: string]: BenchmarkResult },
+    config: Config,
+) {
     const { commentAlways, githubToken } = config;
 
     if (!commentAlways) {
@@ -269,12 +288,18 @@ async function handleComment(benchName: string, curSuite: Benchmark, prevSuite: 
 
     core.debug('Commenting about benchmark comparison');
 
-    const body = buildComment(benchName, curSuite, prevSuite, config);
+    const body = buildComment(benchName, curSuite, prevSuite, prevBest, config);
 
     await leaveComment(curSuite.commit.id, body, githubToken);
 }
 
-async function handleAlert(benchName: string, curSuite: Benchmark, prevSuite: Benchmark, config: Config) {
+async function handleAlert(
+    benchName: string,
+    curSuite: Benchmark,
+    prevSuite: Benchmark,
+    prevBest: { [key: string]: BenchmarkResult },
+    config: Config,
+) {
     const { alertThreshold, githubToken, commentOnAlert, failOnAlert, alertCommentCcUsers, failThreshold } = config;
 
     if (!commentOnAlert && !failOnAlert) {
@@ -289,7 +314,16 @@ async function handleAlert(benchName: string, curSuite: Benchmark, prevSuite: Be
     }
 
     core.debug(`Found ${alerts.length} alerts`);
-    const body = buildAlertComment(alerts, benchName, curSuite, prevSuite, alertThreshold, alertCommentCcUsers, config);
+    const body = buildAlertComment(
+        alerts,
+        benchName,
+        curSuite,
+        prevSuite,
+        prevBest,
+        alertThreshold,
+        alertCommentCcUsers,
+        config,
+    );
     let message = body;
     let url = null;
 
@@ -328,11 +362,10 @@ function addBenchmarkToDataJson(
     bench: Benchmark,
     data: DataJson,
     maxItems: number | null,
-): Benchmark | null {
+): Benchmark[] {
     const repoMetadata = getCurrentRepoMetadata();
     const htmlUrl = repoMetadata.html_url ?? '';
 
-    let prevBench: Benchmark | null = null;
     data.lastUpdate = Date.now();
     data.repoUrl = htmlUrl;
 
@@ -340,16 +373,10 @@ function addBenchmarkToDataJson(
     if (data.entries[benchName] === undefined) {
         data.entries[benchName] = [bench];
         core.debug(`No suite was found for benchmark '${benchName}' in existing data. Created`);
+        return [];
     } else {
         const suites = data.entries[benchName];
-        // Get last suite which has different commit ID for alert comment
-        for (const e of suites.slice().reverse()) {
-            if (e.commit.id !== bench.commit.id) {
-                prevBench = e;
-                break;
-            }
-        }
-
+        const prevSuites = suites.filter((e) => e.commit.id !== bench.commit.id);
         suites.push(bench);
 
         if (maxItems !== null && suites.length > maxItems) {
@@ -358,9 +385,8 @@ function addBenchmarkToDataJson(
                 `Number of data items for '${benchName}' was truncated to ${maxItems} due to max-items-in-charts`,
             );
         }
+        return prevSuites;
     }
-
-    return prevBench;
 }
 
 function isRemoteRejectedError(err: unknown) {
@@ -374,7 +400,7 @@ async function writeBenchmarkToGitHubPagesWithRetry(
     bench: Benchmark,
     config: Config,
     retry: number,
-): Promise<Benchmark | null> {
+): Promise<Benchmark[]> {
     const {
         name,
         tool,
@@ -401,7 +427,7 @@ async function writeBenchmarkToGitHubPagesWithRetry(
     await io.mkdirP(benchmarkDataDirPath);
 
     const data = await loadDataJs(dataPath);
-    const prevBench = addBenchmarkToDataJson(name, bench, data, maxItemsInChart);
+    const prevSuites = addBenchmarkToDataJson(name, bench, data, maxItemsInChart);
 
     await storeDataJs(dataPath, data);
 
@@ -444,10 +470,10 @@ async function writeBenchmarkToGitHubPagesWithRetry(
         );
     }
 
-    return prevBench;
+    return prevSuites;
 }
 
-async function writeBenchmarkToGitHubPages(bench: Benchmark, config: Config): Promise<Benchmark | null> {
+async function writeBenchmarkToGitHubPages(bench: Benchmark, config: Config): Promise<Benchmark[]> {
     const { ghPagesBranch, skipFetchGhPages, githubToken } = config;
     if (!skipFetchGhPages) {
         await git.fetch(githubToken, ghPagesBranch);
@@ -479,14 +505,14 @@ async function writeBenchmarkToExternalJson(
     bench: Benchmark,
     jsonFilePath: string,
     config: Config,
-): Promise<Benchmark | null> {
+): Promise<Benchmark[]> {
     const { name, maxItemsInChart, saveDataFile } = config;
     const data = await loadDataJson(jsonFilePath);
-    const prevBench = addBenchmarkToDataJson(name, bench, data, maxItemsInChart);
+    const prevSuites = addBenchmarkToDataJson(name, bench, data, maxItemsInChart);
 
     if (!saveDataFile) {
         core.debug('Skipping storing benchmarks in external data file');
-        return prevBench;
+        return prevSuites;
     }
 
     try {
@@ -497,21 +523,36 @@ async function writeBenchmarkToExternalJson(
         throw new Error(`Could not store benchmark data as JSON at ${jsonFilePath}: ${err}`);
     }
 
-    return prevBench;
+    return prevSuites;
 }
 
 export async function writeBenchmark(bench: Benchmark, config: Config) {
     const { name, externalDataJsonPath } = config;
-    const prevBench = externalDataJsonPath
+    const prevSuites = externalDataJsonPath
         ? await writeBenchmarkToExternalJson(bench, externalDataJsonPath, config)
         : await writeBenchmarkToGitHubPages(bench, config);
 
+    // Get last suite which has different commit ID for alert comment
+    const prevBench: Benchmark | undefined = prevSuites[prevSuites.length - 1];
+
+    // Get best benchmark (possibly including the current one)
+    const better = biggerIsBetter(config.tool) ? (a: number, b: number) => a > b : (a: number, b: number) => a < b;
+    const prevBest: { [key: string]: BenchmarkResult } = {};
+    for (const b of bench.benches) {
+        const results = prevSuites
+            .map((e) => e.benches.find((i) => i.name === b.name))
+            .filter((i) => i !== undefined) as BenchmarkResult[];
+        if (results.length > 0) {
+            prevBest[b.name] = results.reduce((best, curr) => (better(curr.value, best.value) ? curr : best));
+        }
+    }
+
     // Put this after `git push` for reducing possibility to get conflict on push. Since sending
     // comment take time due to API call, do it after updating remote branch.
-    if (prevBench === null) {
+    if (prevBench === undefined) {
         core.debug('Alert check was skipped because previous benchmark result was not found');
     } else {
-        await handleComment(name, bench, prevBench, config);
-        await handleAlert(name, bench, prevBench, config);
+        await handleComment(name, bench, prevBench, prevBest, config);
+        await handleAlert(name, bench, prevBench, prevBest, config);
     }
 }
