@@ -30,6 +30,7 @@ export interface Config {
     alertThreshold: number;
     failOnAlert: boolean;
     failThreshold: number;
+    compareWithBest: boolean;
     alertCommentCcUsers: string[];
     externalDataJsonPath: string | undefined;
     maxItemsInChart: number | null;
@@ -240,6 +241,7 @@ export async function configFromJobInput(): Promise<Config> {
     const commentOnAlert = getBoolInput('comment-on-alert');
     const alertThreshold = getPercentageInput('alert-threshold');
     const failOnAlert = getBoolInput('fail-on-alert');
+    const compareWithBest = getBoolInput('compare-with-best');
     const alertCommentCcUsers = getCommaSeparatedInput('alert-comment-cc-users');
     let externalDataJsonPath: undefined | string = core.getInput('external-data-json-path');
     const maxItemsInChart = getUintInput('max-items-in-chart');
@@ -282,6 +284,7 @@ export async function configFromJobInput(): Promise<Config> {
         commentOnAlert,
         alertThreshold,
         failOnAlert,
+        compareWithBest,
         alertCommentCcUsers,
         externalDataJsonPath,
         maxItemsInChart,
