@@ -188,8 +188,6 @@ function buildComment(
     const lines = [
         `# ${benchName}`,
         '',
-        '<details>',
-        '',
         `| Benchmark suite | Best | Previous: ${prevSuite.commit.id} | Current: ${curSuite.commit.id} | ${ratioStr} |`,
         '|-|-|-|-|-|',
     ];
@@ -213,7 +211,7 @@ function buildComment(
     }
 
     // Footer
-    lines.push('', '</details>', '', commentFooter(config));
+    lines.push('', commentFooter(config));
 
     return lines.join('\n');
 }
